@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>주문하기</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif; margin: 24px; }
+    h1 { margin-top: 0; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    label { display: inline-block; width: 120px; }
+    button { padding: 8px 14px; border-radius: 8px; border: 1px solid #999; background: #fafafa; cursor: pointer; }
+    button:active { transform: translateY(1px); }
+    ul { padding-left: 18px; }
+    .muted { color: #666; font-size: 0.95rem; }
+    input[type="text"] { padding: 8px; border: 1px solid #ccc; border-radius: 6px; min-width: 220px; }
+    input[type="number"] { width: 80px; padding: 6px; border: 1px solid #ccc; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>주문하기</h1>
+  <div class="card">
+    <div class="row">
+      <label for="userId">사용자 ID</label>
+      <input id="userId" type="text" placeholder="(카카오에서 자동 배정될 ID)" />
+      <button id="genUser">랜덤생성</button>
+    </div>
+    <p class="muted">
+      * 카카오 채널에서 접속 시 <code>?user_id=...</code> 또는 쿠키로 전달된 값을 자동으로 사용합니다.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>장바구니</h3>
+    <div class="row">
+      <input id="itemName" type="text" placeholder="상품명 (예: 사과)" />
+      <input id="itemQty" type="number" min="1" value="1" />
+      <button id="addItem">추가</button>
+    </div>
+    <ul id="cartList"></ul>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="placeOrder">서버에 주문 저장</button>
+      <a id="viewLink" href="/launch/view-order" style="margin-left:8px;">내 QR코드 확인</a>
+      <span id="status" class="muted"></span>
+    </div>
+  </div>
+
+  <script>
+    const $ = (s)=>document.querySelector(s);
+    const cart = [];
+
+    function setCookie(name, value, days=30) {
+      const d = new Date();
+      d.setTime(d.getTime() + (days*24*60*60*1000));
+      document.cookie = name + "=" + encodeURIComponent(value) + ";expires=" + d.toUTCString() + ";path=/";
+    }
+    function getCookie(name) {
+      const ca = document.cookie.split(';');
+      for (let c of ca) {
+        c = c.trim();
+        if (c.indexOf(name + "=") === 0) return decodeURIComponent(c.substring(name.length + 1));
+      }
+      return "";
+    }
+
+    function getUserIdFromContext() {
+      const p = new URLSearchParams(location.search);
+      const fromParam = p.get("user_id");
+      if (fromParam) return fromParam;
+      const fromCookie = getCookie("k_uid");
+      if (fromCookie) return fromCookie;
+      return "";
+    }
+
+    function renderCart(){
+      const ul = $("#cartList");
+      ul.innerHTML = "";
+      cart.forEach(it => {
+        const li = document.createElement("li");
+        li.textContent = `${it.name} x ${it.qty}`;
+        ul.appendChild(li);
+      });
+    }
+
+    $("#genUser").addEventListener("click", () => {
+      const id = "u" + Math.random().toString(36).slice(2, 8);
+      $("#userId").value = id;
+      setCookie("k_uid", id);
+    });
+
+    $("#addItem").addEventListener("click", () => {
+      const n = $("#itemName").value.trim();
+      const q = parseInt($("#itemQty").value || "1", 10);
+      if (!n) { alert("상품명을 입력하세요"); return; }
+      if (q <= 0) { alert("수량은 1 이상"); return; }
+      cart.push({ name: n, qty: q });
+      $("#itemName").value = "";
+      $("#itemQty").value = "1";
+      renderCart();
+    });
+
+    async function sendOrderToServer(orderData) {
+      const res = await fetch("/api/create-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(orderData),
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error("create-order failed: " + t);
+      }
+      return await res.json(); // {success, orderId, qr}
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const known = getUserIdFromContext();
+      if (known) {
+        $("#userId").value = known;
+        setCookie("k_uid", known);
+        // 링크에 user_id 붙여두기
+        $("#viewLink").href = `/launch/view-order?user_id=${encodeURIComponent(known)}`;
+      }
+    });
+
+    $("#placeOrder").addEventListener("click", async () => {
+      const userId = $("#userId").value.trim();
+      if (!userId) { alert("사용자 ID가 없습니다."); return; }
+      if (cart.length === 0) { alert("장바구니를 채워주세요."); return; }
+
+      const payload = {
+        userId,
+        items: cart.slice(),
+        orderTimestamp: new Date().toISOString(),
+      };
+
+      $("#status").textContent = "주문 저장 중...";
+      try {
+        const res = await sendOrderToServer(payload);
+        if (!res.success) throw new Error("server rejected");
+        setCookie("k_uid", userId);
+        $("#viewLink").href = res.qr.startsWith("http") ? res.qr : (location.origin + res.qr);
+        $("#status").textContent = "저장 완료! '내 QR코드 확인' 링크로 이동하세요.";
+      } catch (e) {
+        console.error(e);
+        $("#status").textContent = "실패: " + e.message;
+        alert("주문 저장 중 오류가 발생했습니다.");
+      }
+    });
+  </script>
+</body>
+</html>
